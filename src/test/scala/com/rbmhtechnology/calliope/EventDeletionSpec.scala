@@ -70,6 +70,13 @@ class EventDeletionSpec extends TestKit(ActorSystem("test"))
     override def deleteEvents(toSequenceNr: Long): Future[Unit] = (deletionProbe.ref ? toSequenceNr).map(_.asInstanceOf[Unit])
   }
 
+  def fixedResultActorEventDeleter(result: Try[Unit], deletionProbe: TestProbe = eventDeletionProbe): EventDeleter = new EventDeleter {
+    override def deleteEvents(toSequenceNr: Long): Future[Unit] = {
+      deletionProbe.ref ! toSequenceNr
+      Future.fromTry(result)
+    }
+  }
+
   "An EventDeletionSink" when {
     "elements are pushed from upstream" when {
       "deleteEvents of the underlying EventDeleter returns a result" that is {
@@ -104,25 +111,24 @@ class EventDeletionSpec extends TestKit(ActorSystem("test"))
             pub.expectRequest()
           }
           "invoke deleteEvents for each time frame" in {
-            val (pub, _) = runSink(EventDeletion.sink[SequenceNr](actorEventDeleter(), perDuration = 500.millis))
+            val deleteInterval = 500.millis
+            val (pub, _) = runSink(EventDeletion.sink[SequenceNr](fixedResultActorEventDeleter(result = Success(())), perDuration = deleteInterval))
 
             pub.sendNext(SequenceNr(1L))
-
             pub.sendNext(SequenceNr(2L))
             pub.sendNext(SequenceNr(3L))
             pub.sendNext(SequenceNr(4L))
-            eventDeletionProbe.expectSequenceNrAndReply(1L)
-            Thread.sleep(750.millis.toMillis)
 
+            Thread.sleep((deleteInterval * 1.5).toMillis)
             pub.sendNext(SequenceNr(5L))
+            Thread.sleep((deleteInterval / 4).toMillis)
             pub.sendNext(SequenceNr(6L))
-            eventDeletionProbe.expectSequenceNrAndReply(4L)
-            Thread.sleep(750.millis.toMillis)
 
+            Thread.sleep((deleteInterval * 1.5).toMillis)
             pub.sendNext(SequenceNr(7L))
             pub.sendNext(SequenceNr(8L))
-            eventDeletionProbe.expectSequenceNrAndReply(6L)
-            eventDeletionProbe.expectSequenceNrAndReply(8L)
+
+            eventDeletionProbe.receiveN(3, max = 2.second) mustBe Seq(4L, 6L, 8L)
 
             pub.expectRequest()
           }
